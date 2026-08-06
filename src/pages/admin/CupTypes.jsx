@@ -7,7 +7,15 @@ import Badge from '../../components/ui/Badge'
 import Loading from '../../components/ui/Loading'
 import EmptyState from '../../components/ui/EmptyState'
 import Alert from '../../components/ui/Alert'
-import { Package, Plus, Pencil, Eye, EyeOff } from 'lucide-react'
+import {
+  Package,
+  Plus,
+  Pencil,
+  Eye,
+  EyeOff,
+  ArrowUp,
+  ArrowDown,
+} from 'lucide-react'
 
 export default function CupTypes() {
   const [data, setData] = useState([])
@@ -21,6 +29,7 @@ export default function CupTypes() {
   const [form, setForm] = useState({
     nama_cup: '',
     ukuran: '',
+    urutan: '1',
   })
 
   useEffect(() => {
@@ -32,14 +41,19 @@ export default function CupTypes() {
     const { data: cups } = await supabase
       .from('cup_types')
       .select('*')
-      .order('ukuran')
+      .order('urutan')
+      .order('nama_cup')
     setData(cups ?? [])
     setLoading(false)
   }
 
   const openAdd = () => {
     setEditData(null)
-    setForm({ nama_cup: '', ukuran: '' })
+    setForm({
+      nama_cup: '',
+      ukuran: '',
+      urutan: String(data.length + 1),
+    })
     setError('')
     setSuccess('')
     setModal(true)
@@ -50,6 +64,7 @@ export default function CupTypes() {
     setForm({
       nama_cup: item.nama_cup,
       ukuran: item.ukuran || '',
+      urutan: String(item.urutan || 0),
     })
     setError('')
     setSuccess('')
@@ -69,6 +84,7 @@ export default function CupTypes() {
       const payload = {
         nama_cup: form.nama_cup,
         ukuran: form.ukuran,
+        urutan: parseInt(form.urutan) || 0,
       }
 
       if (editData) {
@@ -98,7 +114,6 @@ export default function CupTypes() {
   const toggleStatus = async (item) => {
     const newStatus = item.status === 'aktif' ? 'nonaktif' : 'aktif'
 
-    // Cek apakah cup ini masih dipakai di menu aktif
     if (newStatus === 'nonaktif') {
       const { data: menus } = await supabase
         .from('menus')
@@ -128,6 +143,43 @@ export default function CupTypes() {
     }
   }
 
+  // Swap urutan
+  const moveUp = async (item, index) => {
+    if (index === 0) return
+    const above = data[index - 1]
+
+    await Promise.all([
+      supabase
+        .from('cup_types')
+        .update({ urutan: above.urutan })
+        .eq('id', item.id),
+      supabase
+        .from('cup_types')
+        .update({ urutan: item.urutan })
+        .eq('id', above.id),
+    ])
+
+    await fetchData()
+  }
+
+  const moveDown = async (item, index) => {
+    if (index === data.length - 1) return
+    const below = data[index + 1]
+
+    await Promise.all([
+      supabase
+        .from('cup_types')
+        .update({ urutan: below.urutan })
+        .eq('id', item.id),
+      supabase
+        .from('cup_types')
+        .update({ urutan: item.urutan })
+        .eq('id', below.id),
+    ])
+
+    await fetchData()
+  }
+
   const cupAktif = data.filter((c) => c.status === 'aktif').length
 
   if (loading) return <Loading />
@@ -135,7 +187,7 @@ export default function CupTypes() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Kelola Jenis Cup</h1>
           <p className="text-sm text-gray-500">
@@ -158,39 +210,63 @@ export default function CupTypes() {
           description="Tambahkan jenis cup yang digunakan"
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {data.map((item) => (
+        <div className="space-y-3">
+          {data.map((item, index) => (
             <div
               key={item.id}
-              className={`bg-white rounded-2xl p-5 border transition-colors ${
+              className={`bg-white rounded-2xl p-4 border transition-colors ${
                 item.status === 'aktif'
                   ? 'border-gray-100'
-                  : 'border-gray-100 opacity-50'
+                  : 'border-gray-100 opacity-60'
               }`}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
+              <div className="flex items-center gap-3">
+                {/* Urutan Badge */}
+                <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                  <span className="text-sm font-bold text-orange-500">
+                    #{item.urutan}
+                  </span>
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    {/* Icon Cup */}
-                    <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center">
-                      <Package size={20} className="text-orange-500" />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-sm text-gray-800">
-                        {item.nama_cup}
-                      </p>
-                      <p className="text-xs text-gray-400">
-                        Ukuran: {item.ukuran || '-'}
-                      </p>
-                    </div>
+                    <p className="font-semibold text-sm text-gray-800">
+                      {item.nama_cup}
+                    </p>
                     <Badge
                       label={item.status}
                       color={item.status === 'aktif' ? 'green' : 'red'}
                     />
                   </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Ukuran: {item.ukuran || '-'}
+                  </p>
                 </div>
 
-                <div className="flex gap-1 ml-3">
+                {/* Actions */}
+                <div className="flex gap-1 flex-shrink-0">
+                  {/* Naik */}
+                  <button
+                    onClick={() => moveUp(item, index)}
+                    disabled={index === 0}
+                    className="p-2 hover:bg-gray-100 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    title="Naikkan urutan"
+                  >
+                    <ArrowUp size={14} className="text-gray-500" />
+                  </button>
+
+                  {/* Turun */}
+                  <button
+                    onClick={() => moveDown(item, index)}
+                    disabled={index === data.length - 1}
+                    className="p-2 hover:bg-gray-100 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    title="Turunkan urutan"
+                  >
+                    <ArrowDown size={14} className="text-gray-500" />
+                  </button>
+
+                  {/* Edit */}
                   <button
                     onClick={() => openEdit(item)}
                     className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
@@ -198,10 +274,14 @@ export default function CupTypes() {
                   >
                     <Pencil size={16} className="text-gray-500" />
                   </button>
+
+                  {/* Toggle */}
                   <button
                     onClick={() => toggleStatus(item)}
                     className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
-                    title={item.status === 'aktif' ? 'Nonaktifkan' : 'Aktifkan'}
+                    title={
+                      item.status === 'aktif' ? 'Nonaktifkan' : 'Aktifkan'
+                    }
                   >
                     {item.status === 'aktif' ? (
                       <EyeOff size={16} className="text-red-500" />
@@ -216,7 +296,7 @@ export default function CupTypes() {
         </div>
       )}
 
-      {/* Modal Tambah / Edit */}
+      {/* Modal */}
       <Modal
         open={modal}
         onClose={() => setModal(false)}
@@ -231,7 +311,7 @@ export default function CupTypes() {
             onChange={(e) =>
               setForm((p) => ({ ...p, nama_cup: e.target.value }))
             }
-            placeholder="Contoh: Cup 16 oz"
+            placeholder="Contoh: Cup Bubuk Besar"
             required
           />
 
@@ -241,9 +321,19 @@ export default function CupTypes() {
             onChange={(e) =>
               setForm((p) => ({ ...p, ukuran: e.target.value }))
             }
-            placeholder="Contoh: 16 oz"
+            placeholder="Contoh: 22 oz"
             required
-            hint="Tulis ukuran cup (contoh: 12 oz, 14 oz, 16 oz, 22 oz)"
+          />
+
+          <Input
+            label="Urutan Tampilan"
+            type="number"
+            value={form.urutan}
+            onChange={(e) =>
+              setForm((p) => ({ ...p, urutan: e.target.value }))
+            }
+            placeholder="1"
+            hint="Semakin kecil, semakin di atas. Pakai tombol ⬆️⬇️ untuk atur cepat."
           />
 
           <div className="flex gap-3 pt-2">

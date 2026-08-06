@@ -4,8 +4,15 @@ import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import Loading from '../../components/ui/Loading'
 import EmptyState from '../../components/ui/EmptyState'
-import { getStatusBadge, formatJam, hitungDurasi } from '../../utils/helpers'
-import { Download, Users, Clock } from 'lucide-react'
+import Modal from '../../components/ui/Modal'
+import Alert from '../../components/ui/Alert'
+import Input from '../../components/ui/Input'
+import {
+  getStatusBadge,
+  formatJam,
+  hitungDurasi,
+} from '../../utils/helpers'
+import { Download, Clock, Pencil, Trash2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { id } from 'date-fns/locale'
 import * as XLSX from 'xlsx'
@@ -21,6 +28,20 @@ export default function Absensi() {
     user_id: '',
   })
 
+  const [modalEdit, setModalEdit] = useState(false)
+  const [modalHapus, setModalHapus] = useState(false)
+  const [selected, setSelected] = useState(null)
+  const [editForm, setEditForm] = useState({
+    jam_masuk: '',
+    jam_pulang: '',
+    status_hadir: 'hadir',
+    keterangan_hadir: '',
+    catatan: '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
   useEffect(() => {
     fetchKaryawan()
   }, [])
@@ -34,7 +55,6 @@ export default function Absensi() {
       .from('users')
       .select('id, nama')
       .eq('role', 'karyawan')
-      .eq('status', 'aktif')
       .order('nama')
     setKaryawan(data ?? [])
   }
@@ -55,14 +75,11 @@ export default function Absensi() {
         .order('tanggal', { ascending: false })
         .order('shift')
 
-      if (filter.user_id) {
-        query = query.eq('user_id', filter.user_id)
-      }
+      if (filter.user_id) query = query.eq('user_id', filter.user_id)
 
       const { data: shifts } = await query
       setData(shifts ?? [])
 
-      // Buat rekap per karyawan
       const rekapMap = {}
       shifts?.forEach((s) => {
         const uid = s.users?.id
@@ -96,6 +113,76 @@ export default function Absensi() {
       setRekap(Object.values(rekapMap))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const openEdit = (item) => {
+    setSelected(item)
+    setEditForm({
+      jam_masuk: item.jam_masuk || '',
+      jam_pulang: item.jam_pulang || '',
+      status_hadir: item.status_hadir,
+      keterangan_hadir: item.keterangan_hadir || '',
+      catatan: item.catatan || '',
+    })
+    setError('')
+    setSuccess('')
+    setModalEdit(true)
+  }
+
+  const handleEdit = async (e) => {
+    e.preventDefault()
+    setError('')
+
+    setSubmitting(true)
+    try {
+      const { error: updateError } = await supabase
+        .from('shifts')
+        .update({
+          jam_masuk: editForm.jam_masuk || null,
+          jam_pulang: editForm.jam_pulang || null,
+          status_hadir: editForm.status_hadir,
+          keterangan_hadir: editForm.keterangan_hadir || null,
+          catatan: editForm.catatan || null,
+        })
+        .eq('id', selected.id)
+
+      if (updateError) throw updateError
+
+      setSuccess('Absensi berhasil diupdate')
+      setModalEdit(false)
+      await fetchData()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const openHapus = (item) => {
+    setSelected(item)
+    setError('')
+    setSuccess('')
+    setModalHapus(true)
+  }
+
+  const handleHapus = async () => {
+    setSubmitting(true)
+    try {
+      const { error: deleteError } = await supabase
+        .from('shifts')
+        .delete()
+        .eq('id', selected.id)
+
+      if (deleteError) throw deleteError
+
+      setSuccess('Shift & data terkait berhasil dihapus')
+      setModalHapus(false)
+      await fetchData()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -168,6 +255,9 @@ export default function Absensi() {
         </Button>
       </div>
 
+      {success && <Alert type="success">{success}</Alert>}
+      {error && <Alert type="error">{error}</Alert>}
+
       {/* Filter */}
       <div className="bg-white rounded-2xl p-4 border border-gray-100 flex flex-wrap gap-3">
         <div className="flex-1 min-w-40">
@@ -180,8 +270,7 @@ export default function Absensi() {
             onChange={(e) =>
               setFilter((p) => ({ ...p, bulan: e.target.value }))
             }
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 
-              text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
           />
         </div>
         <div className="flex-1 min-w-40">
@@ -193,8 +282,7 @@ export default function Absensi() {
             onChange={(e) =>
               setFilter((p) => ({ ...p, user_id: e.target.value }))
             }
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 
-              text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
           >
             <option value="">Semua Karyawan</option>
             {karyawan.map((k) => (
@@ -234,10 +322,7 @@ export default function Absensi() {
                   </div>
                 ))}
               </div>
-              <div
-                className="mt-3 pt-3 border-t border-gray-100 text-sm 
-                flex justify-between text-gray-500"
-              >
+              <div className="mt-3 pt-3 border-t border-gray-100 text-sm flex justify-between text-gray-500">
                 <span>Total Jam Kerja</span>
                 <span className="font-semibold text-gray-700">
                   {formatDurasiTotal(r.total_menit)}
@@ -248,7 +333,7 @@ export default function Absensi() {
         </div>
       )}
 
-      {/* Tabel Detail */}
+      {/* Tabel */}
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
         <div className="p-4 border-b border-gray-100">
           <p className="font-bold text-gray-800">Detail Absensi</p>
@@ -259,7 +344,7 @@ export default function Absensi() {
           <EmptyState
             icon={Clock}
             title="Tidak ada data"
-            description="Belum ada data absensi untuk bulan ini"
+            description="Belum ada absensi"
           />
         ) : (
           <div className="overflow-x-auto">
@@ -274,6 +359,7 @@ export default function Absensi() {
                     'Pulang',
                     'Durasi',
                     'Status',
+                    'Aksi',
                   ].map((h) => (
                     <th
                       key={h}
@@ -304,6 +390,22 @@ export default function Absensi() {
                       <td className="px-4 py-3">
                         <Badge label={sb.label} color={sb.color} />
                       </td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => openEdit(s)}
+                            className="p-1.5 hover:bg-blue-100 rounded-lg transition-colors"
+                          >
+                            <Pencil size={14} className="text-blue-500" />
+                          </button>
+                          <button
+                            onClick={() => openHapus(s)}
+                            className="p-1.5 hover:bg-red-100 rounded-lg transition-colors"
+                          >
+                            <Trash2 size={14} className="text-red-500" />
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   )
                 })}
@@ -312,6 +414,171 @@ export default function Absensi() {
           </div>
         )}
       </div>
+
+      {/* MODAL EDIT */}
+      <Modal
+        open={modalEdit}
+        onClose={() => setModalEdit(false)}
+        title="Edit Absensi"
+        size="lg"
+      >
+        {selected && (
+          <form onSubmit={handleEdit} className="space-y-4">
+            {error && <Alert type="error">{error}</Alert>}
+
+            <div className="bg-gray-50 rounded-xl p-3">
+              <p className="text-xs text-gray-500">Karyawan</p>
+              <p className="font-semibold text-gray-800">
+                {selected.users?.nama}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                {selected.tanggal} · Shift {selected.shift}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="Jam Masuk"
+                type="time"
+                value={editForm.jam_masuk}
+                onChange={(e) =>
+                  setEditForm((p) => ({ ...p, jam_masuk: e.target.value }))
+                }
+              />
+              <Input
+                label="Jam Pulang"
+                type="time"
+                value={editForm.jam_pulang}
+                onChange={(e) =>
+                  setEditForm((p) => ({ ...p, jam_pulang: e.target.value }))
+                }
+              />
+            </div>
+
+            {/* Status */}
+            <div className="space-y-1">
+              <label className="block text-sm font-medium text-gray-700">
+                Status Kehadiran
+              </label>
+              <div className="grid grid-cols-5 gap-2">
+                {['hadir', 'telat', 'izin', 'sakit', 'alpha'].map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() =>
+                      setEditForm((p) => ({ ...p, status_hadir: s }))
+                    }
+                    className={`py-2 rounded-xl text-xs font-semibold 
+                      capitalize border-2 transition-colors
+                      ${
+                        editForm.status_hadir === s
+                          ? 'border-orange-500 bg-orange-50 text-orange-600'
+                          : 'border-gray-200 text-gray-600'
+                      }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <Input
+              label="Keterangan (Izin/Sakit/dll)"
+              value={editForm.keterangan_hadir}
+              onChange={(e) =>
+                setEditForm((p) => ({
+                  ...p,
+                  keterangan_hadir: e.target.value,
+                }))
+              }
+              placeholder="Opsional"
+            />
+
+            <Input
+              label="Catatan"
+              value={editForm.catatan}
+              onChange={(e) =>
+                setEditForm((p) => ({ ...p, catatan: e.target.value }))
+              }
+              placeholder="Opsional"
+            />
+
+            <div className="flex gap-3 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setModalEdit(false)}
+                className="flex-1"
+              >
+                Batal
+              </Button>
+              <Button type="submit" loading={submitting} className="flex-1">
+                Update
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* MODAL HAPUS */}
+      <Modal
+        open={modalHapus}
+        onClose={() => setModalHapus(false)}
+        title="Hapus Shift?"
+      >
+        {selected && (
+          <div className="space-y-4">
+            {error && <Alert type="error">{error}</Alert>}
+
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+              <p className="text-sm text-red-700 font-semibold">
+                ⚠️ PERHATIAN!
+              </p>
+              <p className="text-xs text-red-600 mt-1">
+                Menghapus shift akan menghapus <strong>semua data terkait</strong>:
+              </p>
+              <ul className="text-xs text-red-600 mt-1 list-disc list-inside">
+                <li>Semua penjualan di shift ini</li>
+                <li>Semua pengeluaran di shift ini</li>
+                <li>Data stok cup shift ini</li>
+              </ul>
+              <p className="text-xs text-red-600 mt-2 font-semibold">
+                Data yang dihapus tidak bisa dikembalikan!
+              </p>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4">
+              <p className="font-semibold text-gray-800">
+                {selected.users?.nama}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                {selected.tanggal} · Shift {selected.shift}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                {formatJam(selected.jam_masuk)} -{' '}
+                {formatJam(selected.jam_pulang)}
+              </p>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setModalHapus(false)}
+                className="flex-1"
+              >
+                Batal
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleHapus}
+                loading={submitting}
+                className="flex-1"
+              >
+                Ya, Hapus Semua
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

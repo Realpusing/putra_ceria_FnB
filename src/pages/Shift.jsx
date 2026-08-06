@@ -58,7 +58,7 @@ export default function Shift() {
         .from('cup_types')
         .select('*')
         .eq('status', 'aktif')
-        .order('ukuran')
+        .order('urutan')
       setCupTypes(cups ?? [])
 
       // Shift aktif

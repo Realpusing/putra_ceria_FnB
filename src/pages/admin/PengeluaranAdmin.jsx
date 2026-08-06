@@ -4,8 +4,11 @@ import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Loading from '../../components/ui/Loading'
 import EmptyState from '../../components/ui/EmptyState'
+import Modal from '../../components/ui/Modal'
+import Alert from '../../components/ui/Alert'
+import Input from '../../components/ui/Input'
 import { formatRupiah, formatJam } from '../../utils/helpers'
-import { Download, Receipt } from 'lucide-react'
+import { Download, Receipt, Pencil, Trash2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { id } from 'date-fns/locale'
 import * as XLSX from 'xlsx'
@@ -25,6 +28,13 @@ const KATEGORI_LABELS = {
   lainnya: 'Lainnya',
 }
 
+const KATEGORI = [
+  { value: 'cup', label: 'Cup' },
+  { value: 'bahan_baku', label: 'Bahan Baku' },
+  { value: 'operasional', label: 'Operasional' },
+  { value: 'lainnya', label: 'Lainnya' },
+]
+
 export default function PengeluaranAdmin() {
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(true)
@@ -34,6 +44,22 @@ export default function PengeluaranAdmin() {
     user_id: '',
     kategori: '',
   })
+
+  const [modalEdit, setModalEdit] = useState(false)
+  const [modalHapus, setModalHapus] = useState(false)
+  const [selected, setSelected] = useState(null)
+  const [editForm, setEditForm] = useState({
+    kategori: '',
+    nama_barang: '',
+    qty: '1',
+    harga_satuan: '',
+    is_cup: false,
+    jumlah_cup: '',
+    catatan: '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
 
   useEffect(() => {
     fetchKaryawan()
@@ -48,7 +74,6 @@ export default function PengeluaranAdmin() {
       .from('users')
       .select('id, nama')
       .eq('role', 'karyawan')
-      .eq('status', 'aktif')
       .order('nama')
     setKaryawan(data ?? [])
   }
@@ -76,12 +101,123 @@ export default function PengeluaranAdmin() {
     setLoading(false)
   }
 
+  const openEdit = (item) => {
+    setSelected(item)
+    setEditForm({
+      kategori: item.kategori,
+      nama_barang: item.nama_barang,
+      qty: String(item.qty),
+      harga_satuan: String(item.harga_satuan),
+      is_cup: item.is_cup,
+      jumlah_cup: String(item.jumlah_cup || ''),
+      catatan: item.catatan || '',
+    })
+    setError('')
+    setSuccess('')
+    setModalEdit(true)
+  }
+
+  const handleEdit = async (e) => {
+    e.preventDefault()
+    setError('')
+
+    setSubmitting(true)
+    try {
+      const newJumlahCup = editForm.is_cup ? parseInt(editForm.jumlah_cup || 0) : 0
+      const oldJumlahCup = selected.is_cup ? selected.jumlah_cup : 0
+      const cupDiff = newJumlahCup - oldJumlahCup
+
+      const { error: updateError } = await supabase
+        .from('expenses')
+        .update({
+          kategori: editForm.kategori,
+          nama_barang: editForm.nama_barang,
+          qty: parseInt(editForm.qty),
+          harga_satuan: parseFloat(editForm.harga_satuan),
+          is_cup: editForm.is_cup,
+          jumlah_cup: newJumlahCup,
+          catatan: editForm.catatan || null,
+        })
+        .eq('id', selected.id)
+
+      if (updateError) throw updateError
+
+      // Update cup_masuk di shift
+      if (cupDiff !== 0) {
+        const { data: shift } = await supabase
+          .from('shifts')
+          .select('cup_masuk')
+          .eq('id', selected.shift_id)
+          .single()
+
+        if (shift) {
+          await supabase
+            .from('shifts')
+            .update({ cup_masuk: Math.max(0, shift.cup_masuk + cupDiff) })
+            .eq('id', selected.shift_id)
+        }
+      }
+
+      setSuccess('Pengeluaran berhasil diupdate')
+      setModalEdit(false)
+      await fetchData()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const openHapus = (item) => {
+    setSelected(item)
+    setError('')
+    setSuccess('')
+    setModalHapus(true)
+  }
+
+  const handleHapus = async () => {
+    setSubmitting(true)
+    try {
+      // Kurangi cup_masuk di shift jika ini pembelian cup
+      if (selected.is_cup && selected.jumlah_cup > 0) {
+        const { data: shift } = await supabase
+          .from('shifts')
+          .select('cup_masuk')
+          .eq('id', selected.shift_id)
+          .single()
+
+        if (shift) {
+          await supabase
+            .from('shifts')
+            .update({
+              cup_masuk: Math.max(0, shift.cup_masuk - selected.jumlah_cup),
+            })
+            .eq('id', selected.shift_id)
+        }
+      }
+
+      const { error: deleteError } = await supabase
+        .from('expenses')
+        .delete()
+        .eq('id', selected.id)
+
+      if (deleteError) throw deleteError
+
+      setSuccess('Pengeluaran berhasil dihapus')
+      setModalHapus(false)
+      await fetchData()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const totalPengeluaran = data.reduce(
     (sum, e) => sum + e.qty * e.harga_satuan,
     0
   )
 
-  // Rekap per kategori
   const rekapKategori = {}
   data.forEach((e) => {
     if (!rekapKategori[e.kategori]) rekapKategori[e.kategori] = 0
@@ -137,6 +273,9 @@ export default function PengeluaranAdmin() {
         </Button>
       </div>
 
+      {success && <Alert type="success">{success}</Alert>}
+      {error && <Alert type="error">{error}</Alert>}
+
       {/* Filter */}
       <div className="bg-white rounded-2xl p-4 border border-gray-100 flex flex-wrap gap-3">
         <div className="flex-1 min-w-36">
@@ -149,8 +288,7 @@ export default function PengeluaranAdmin() {
             onChange={(e) =>
               setFilter((p) => ({ ...p, bulan: e.target.value }))
             }
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 
-              text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
           />
         </div>
         <div className="flex-1 min-w-36">
@@ -162,8 +300,7 @@ export default function PengeluaranAdmin() {
             onChange={(e) =>
               setFilter((p) => ({ ...p, user_id: e.target.value }))
             }
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 
-              text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
           >
             <option value="">Semua</option>
             {karyawan.map((k) => (
@@ -182,14 +319,14 @@ export default function PengeluaranAdmin() {
             onChange={(e) =>
               setFilter((p) => ({ ...p, kategori: e.target.value }))
             }
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 
-              text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
           >
             <option value="">Semua</option>
-            <option value="cup">Cup</option>
-            <option value="bahan_baku">Bahan Baku</option>
-            <option value="operasional">Operasional</option>
-            <option value="lainnya">Lainnya</option>
+            {KATEGORI.map((k) => (
+              <option key={k.value} value={k.value}>
+                {k.label}
+              </option>
+            ))}
           </select>
         </div>
       </div>
@@ -220,7 +357,7 @@ export default function PengeluaranAdmin() {
         <EmptyState
           icon={Receipt}
           title="Tidak ada data"
-          description="Belum ada pengeluaran untuk filter ini"
+          description="Belum ada pengeluaran"
         />
       ) : (
         <div className="space-y-3">
@@ -259,22 +396,212 @@ export default function PengeluaranAdmin() {
                   <p className="font-bold text-gray-800">
                     {formatRupiah(e.qty * e.harga_satuan)}
                   </p>
-                  {e.foto_nota && (
-                    <a
-                      href={e.foto_nota}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-blue-500 hover:underline"
+                  <div className="flex gap-1 mt-2 justify-end">
+                    <button
+                      onClick={() => openEdit(e)}
+                      className="p-1.5 hover:bg-blue-100 rounded-lg transition-colors"
                     >
-                      Lihat nota
-                    </a>
-                  )}
+                      <Pencil size={14} className="text-blue-500" />
+                    </button>
+                    <button
+                      onClick={() => openHapus(e)}
+                      className="p-1.5 hover:bg-red-100 rounded-lg transition-colors"
+                    >
+                      <Trash2 size={14} className="text-red-500" />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
           ))}
         </div>
       )}
+
+      {/* MODAL EDIT */}
+      <Modal
+        open={modalEdit}
+        onClose={() => setModalEdit(false)}
+        title="Edit Pengeluaran"
+        size="lg"
+      >
+        {selected && (
+          <form onSubmit={handleEdit} className="space-y-4">
+            {error && <Alert type="error">{error}</Alert>}
+
+            <div className="space-y-1">
+              <label className="block text-sm font-medium text-gray-700">
+                Kategori
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {KATEGORI.map((k) => (
+                  <button
+                    key={k.value}
+                    type="button"
+                    onClick={() =>
+                      setEditForm((p) => ({
+                        ...p,
+                        kategori: k.value,
+                        is_cup: k.value === 'cup',
+                      }))
+                    }
+                    className={`p-3 rounded-xl text-left border-2 transition-colors
+                      ${
+                        editForm.kategori === k.value
+                          ? 'border-orange-500 bg-orange-50'
+                          : 'border-gray-200 hover:border-orange-300'
+                      }`}
+                  >
+                    <p className="text-xs font-semibold text-gray-800">
+                      {k.label}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <Input
+              label="Nama Barang"
+              value={editForm.nama_barang}
+              onChange={(e) =>
+                setEditForm((p) => ({ ...p, nama_barang: e.target.value }))
+              }
+              required
+            />
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="Qty"
+                type="number"
+                value={editForm.qty}
+                onChange={(e) =>
+                  setEditForm((p) => ({ ...p, qty: e.target.value }))
+                }
+                required
+              />
+              <Input
+                label="Harga Satuan"
+                type="number"
+                value={editForm.harga_satuan}
+                onChange={(e) =>
+                  setEditForm((p) => ({ ...p, harga_satuan: e.target.value }))
+                }
+                prefix="Rp"
+                required
+              />
+            </div>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editForm.is_cup}
+                onChange={(e) =>
+                  setEditForm((p) => ({ ...p, is_cup: e.target.checked }))
+                }
+                className="w-4 h-4 mt-0.5 accent-orange-500"
+              />
+              <div>
+                <p className="text-sm font-medium text-gray-700">
+                  Pembelian Cup?
+                </p>
+                <p className="text-xs text-gray-400">
+                  Stok cup otomatis diupdate
+                </p>
+              </div>
+            </label>
+
+            {editForm.is_cup && (
+              <Input
+                label="Jumlah Cup"
+                type="number"
+                value={editForm.jumlah_cup}
+                onChange={(e) =>
+                  setEditForm((p) => ({ ...p, jumlah_cup: e.target.value }))
+                }
+                suffix="pcs"
+                required
+              />
+            )}
+
+            <Input
+              label="Catatan"
+              value={editForm.catatan}
+              onChange={(e) =>
+                setEditForm((p) => ({ ...p, catatan: e.target.value }))
+              }
+            />
+
+            <div className="flex gap-3 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setModalEdit(false)}
+                className="flex-1"
+              >
+                Batal
+              </Button>
+              <Button type="submit" loading={submitting} className="flex-1">
+                Update
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* MODAL HAPUS */}
+      <Modal
+        open={modalHapus}
+        onClose={() => setModalHapus(false)}
+        title="Hapus Pengeluaran?"
+      >
+        {selected && (
+          <div className="space-y-4">
+            {error && <Alert type="error">{error}</Alert>}
+
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+              <p className="text-sm text-red-700 font-semibold">
+                Yakin ingin menghapus?
+              </p>
+              <p className="text-xs text-red-600 mt-1">
+                Data yang dihapus tidak bisa dikembalikan
+              </p>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4">
+              <p className="font-semibold text-gray-800">
+                {selected.nama_barang}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                {selected.qty} × {formatRupiah(selected.harga_satuan)} ={' '}
+                <span className="font-bold">
+                  {formatRupiah(selected.qty * selected.harga_satuan)}
+                </span>
+              </p>
+              {selected.is_cup && (
+                <p className="text-xs text-orange-600 mt-2">
+                  ⚠️ Stok cup akan dikurangi {selected.jumlah_cup} pcs
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setModalHapus(false)}
+                className="flex-1"
+              >
+                Batal
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleHapus}
+                loading={submitting}
+                className="flex-1"
+              >
+                Ya, Hapus
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

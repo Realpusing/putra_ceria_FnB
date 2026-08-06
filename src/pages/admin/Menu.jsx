@@ -48,7 +48,7 @@ export default function MenuPage() {
         .from('cup_types')
         .select('*')
         .eq('status', 'aktif')
-        .order('ukuran'),
+        .order('urutan'),
       supabase
         .from('menu_categories')
         .select('*')
