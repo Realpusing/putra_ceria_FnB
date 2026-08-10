@@ -8,22 +8,35 @@ import Modal from '../../components/ui/Modal'
 import Alert from '../../components/ui/Alert'
 import Input from '../../components/ui/Input'
 import { formatRupiah, formatJam } from '../../utils/helpers'
-import { Download, ShoppingCart, Pencil, Trash2 } from 'lucide-react'
-import { format } from 'date-fns'
+import {
+  Download,
+  ShoppingCart,
+  Pencil,
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
+  Calendar,
+  BarChart2,
+} from 'lucide-react'
+import { format, addDays, subDays } from 'date-fns'
 import { id } from 'date-fns/locale'
 import * as XLSX from 'xlsx'
 import { saveAs } from 'file-saver'
 
+const METODE_COLORS = { cash: 'green', transfer: 'blue', qris: 'purple' }
+
 export default function PenjualanAdmin() {
+  const [viewMode, setViewMode] = useState('harian') // 'harian' | 'bulanan'
   const [data, setData] = useState([])
+  const [rekapBulanan, setRekapBulanan] = useState([])
   const [loading, setLoading] = useState(true)
   const [karyawan, setKaryawan] = useState([])
   const [filter, setFilter] = useState({
+    tanggal: new Date().toISOString().slice(0, 10),
     bulan: new Date().toISOString().slice(0, 7),
     user_id: '',
   })
 
-  // Modal Edit
   const [modalEdit, setModalEdit] = useState(false)
   const [modalHapus, setModalHapus] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -38,13 +51,12 @@ export default function PenjualanAdmin() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  useEffect(() => {
-    fetchKaryawan()
-  }, [])
+  useEffect(() => { fetchKaryawan() }, [])
 
   useEffect(() => {
-    fetchData()
-  }, [filter])
+    if (viewMode === 'harian') fetchDataHarian()
+    else fetchDataBulanan()
+  }, [filter, viewMode])
 
   const fetchKaryawan = async () => {
     const { data } = await supabase
@@ -55,7 +67,22 @@ export default function PenjualanAdmin() {
     setKaryawan(data ?? [])
   }
 
-  const fetchData = async () => {
+  const fetchDataHarian = async () => {
+    setLoading(true)
+    let query = supabase
+      .from('sales')
+      .select('*, users(nama)')
+      .eq('tanggal', filter.tanggal)
+      .order('jam', { ascending: false })
+
+    if (filter.user_id) query = query.eq('user_id', filter.user_id)
+
+    const { data: sales } = await query
+    setData(sales ?? [])
+    setLoading(false)
+  }
+
+  const fetchDataBulanan = async () => {
     setLoading(true)
     const [tahun, bulan] = filter.bulan.split('-')
     const startDate = `${tahun}-${bulan}-01`
@@ -73,11 +100,49 @@ export default function PenjualanAdmin() {
     if (filter.user_id) query = query.eq('user_id', filter.user_id)
 
     const { data: sales } = await query
+
+    // Kelompokkan per tanggal
+    const grouped = {}
+    ;(sales ?? []).forEach((s) => {
+      if (!grouped[s.tanggal]) grouped[s.tanggal] = []
+      grouped[s.tanggal].push(s)
+    })
+
+    const rekap = Object.entries(grouped)
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([tanggal, items]) => ({
+        tanggal,
+        items,
+        omzet: items.reduce((s, i) => s + i.qty * i.harga_jual, 0),
+        hpp: items.reduce((s, i) => s + i.qty * i.harga_hpp, 0),
+        profit: items.reduce((s, i) => s + (i.harga_jual - i.harga_hpp) * i.qty, 0),
+        totalItem: items.reduce((s, i) => s + i.qty, 0),
+        totalCup: items.reduce((s, i) => s + i.cup_terpakai, 0),
+      }))
+
     setData(sales ?? [])
+    setRekapBulanan(rekap)
     setLoading(false)
   }
 
-  // ── EDIT ─────────────────────────────
+  const goToPrevDay = () => {
+    const prev = subDays(new Date(filter.tanggal), 1)
+    setFilter((p) => ({ ...p, tanggal: format(prev, 'yyyy-MM-dd') }))
+  }
+
+  const goToNextDay = () => {
+    const next = addDays(new Date(filter.tanggal), 1)
+    const today = new Date().toISOString().slice(0, 10)
+    if (format(next, 'yyyy-MM-dd') <= today)
+      setFilter((p) => ({ ...p, tanggal: format(next, 'yyyy-MM-dd') }))
+  }
+
+  const goToToday = () =>
+    setFilter((p) => ({ ...p, tanggal: new Date().toISOString().slice(0, 10) }))
+
+  const isToday = filter.tanggal === new Date().toISOString().slice(0, 10)
+
+  // ── EDIT ──────────────────────────────────────────────────────────────────
   const openEdit = (item) => {
     setSelected(item)
     setEditForm({
@@ -95,7 +160,6 @@ export default function PenjualanAdmin() {
   const handleEdit = async (e) => {
     e.preventDefault()
     setError('')
-
     setSubmitting(true)
     try {
       const newQty = parseInt(editForm.qty)
@@ -103,7 +167,6 @@ export default function PenjualanAdmin() {
       const qtyDiff = newQty - oldQty
       const cupDiff = qtyDiff * (selected.cup_terpakai / selected.qty)
 
-      // Update sales
       const { error: updateError } = await supabase
         .from('sales')
         .update({
@@ -121,7 +184,6 @@ export default function PenjualanAdmin() {
 
       if (updateError) throw updateError
 
-      // Update cup di shift jika minuman
       if (selected.tipe === 'minuman' && cupDiff !== 0) {
         const { data: shift } = await supabase
           .from('shifts')
@@ -136,7 +198,6 @@ export default function PenjualanAdmin() {
             .eq('id', selected.shift_id)
         }
 
-        // Update shift_cups juga
         if (selected.cup_type_id) {
           const { data: sc } = await supabase
             .from('shift_cups')
@@ -157,7 +218,7 @@ export default function PenjualanAdmin() {
 
       setSuccess('Penjualan berhasil diupdate')
       setModalEdit(false)
-      await fetchData()
+      viewMode === 'harian' ? await fetchDataHarian() : await fetchDataBulanan()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -165,7 +226,7 @@ export default function PenjualanAdmin() {
     }
   }
 
-  // ── HAPUS ────────────────────────────
+  // ── HAPUS ─────────────────────────────────────────────────────────────────
   const openHapus = (item) => {
     setSelected(item)
     setError('')
@@ -176,7 +237,6 @@ export default function PenjualanAdmin() {
   const handleHapus = async () => {
     setSubmitting(true)
     try {
-      // Kurangi cup dari shift jika minuman
       if (selected.tipe === 'minuman' && selected.cup_terpakai > 0) {
         const { data: shift } = await supabase
           .from('shifts')
@@ -187,12 +247,7 @@ export default function PenjualanAdmin() {
         if (shift) {
           await supabase
             .from('shifts')
-            .update({
-              cup_terpakai: Math.max(
-                0,
-                shift.cup_terpakai - selected.cup_terpakai
-              ),
-            })
+            .update({ cup_terpakai: Math.max(0, shift.cup_terpakai - selected.cup_terpakai) })
             .eq('id', selected.shift_id)
         }
 
@@ -207,9 +262,7 @@ export default function PenjualanAdmin() {
           if (sc) {
             await supabase
               .from('shift_cups')
-              .update({
-                cup_terpakai: Math.max(0, sc.cup_terpakai - selected.cup_terpakai),
-              })
+              .update({ cup_terpakai: Math.max(0, sc.cup_terpakai - selected.cup_terpakai) })
               .eq('shift_id', selected.shift_id)
               .eq('cup_type_id', selected.cup_type_id)
           }
@@ -225,7 +278,7 @@ export default function PenjualanAdmin() {
 
       setSuccess('Penjualan berhasil dihapus')
       setModalHapus(false)
-      await fetchData()
+      viewMode === 'harian' ? await fetchDataHarian() : await fetchDataBulanan()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -233,12 +286,15 @@ export default function PenjualanAdmin() {
     }
   }
 
-  // ── Kalkulasi ────────────────────────
+  // ── Kalkulasi summary ─────────────────────────────────────────────────────
   const totalOmzet = data.reduce((s, i) => s + i.qty * i.harga_jual, 0)
   const totalHpp = data.reduce((s, i) => s + i.qty * i.harga_hpp, 0)
   const totalProfit = totalOmzet - totalHpp
   const totalItem = data.reduce((s, i) => s + i.qty, 0)
   const totalCup = data.reduce((s, i) => s + i.cup_terpakai, 0)
+
+  const getTanggalLabel = () =>
+    format(new Date(filter.tanggal + 'T00:00:00'), 'EEEE, dd MMMM yyyy', { locale: id })
 
   const getBulanLabel = () => {
     const [y, m] = filter.bulan.split('-')
@@ -263,19 +319,14 @@ export default function PenjualanAdmin() {
     }))
 
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.json_to_sheet(rows),
-      'Penjualan'
-    )
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Penjualan')
     const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-    saveAs(
-      new Blob([buf], { type: 'application/octet-stream' }),
-      `Penjualan_${filter.bulan}.xlsx`
-    )
+    const filename =
+      viewMode === 'harian'
+        ? `Penjualan_${filter.tanggal}.xlsx`
+        : `Penjualan_${filter.bulan}.xlsx`
+    saveAs(new Blob([buf], { type: 'application/octet-stream' }), filename)
   }
-
-  const METODE_COLORS = { cash: 'green', transfer: 'blue', qris: 'purple' }
 
   if (loading) return <Loading />
 
@@ -284,10 +335,10 @@ export default function PenjualanAdmin() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-xl font-bold text-gray-800">
-            Laporan Penjualan
-          </h1>
-          <p className="text-sm text-gray-500">{getBulanLabel()}</p>
+          <h1 className="text-xl font-bold text-gray-800">Laporan Penjualan</h1>
+          <p className="text-sm text-gray-500">
+            {viewMode === 'harian' ? getTanggalLabel() : getBulanLabel()}
+          </p>
         </div>
         <Button onClick={exportExcel} variant="outline">
           <Download size={16} /> Export Excel
@@ -297,39 +348,91 @@ export default function PenjualanAdmin() {
       {success && <Alert type="success">{success}</Alert>}
       {error && <Alert type="error">{error}</Alert>}
 
+      {/* Toggle View Mode */}
+      <div className="bg-white rounded-2xl p-1.5 border border-gray-100 flex gap-1">
+        <button
+          onClick={() => setViewMode('harian')}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            viewMode === 'harian'
+              ? 'bg-orange-500 text-white shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Calendar size={15} />
+          Harian
+        </button>
+        <button
+          onClick={() => setViewMode('bulanan')}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            viewMode === 'bulanan'
+              ? 'bg-orange-500 text-white shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <BarChart2 size={15} />
+          Bulanan
+        </button>
+      </div>
+
       {/* Filter */}
-      <div className="bg-white rounded-2xl p-4 border border-gray-100 flex flex-wrap gap-3">
-        <div className="flex-1 min-w-40">
-          <label className="block text-xs font-medium text-gray-500 mb-1">
-            Bulan
-          </label>
-          <input
-            type="month"
-            value={filter.bulan}
-            onChange={(e) =>
-              setFilter((p) => ({ ...p, bulan: e.target.value }))
-            }
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 
-              text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </div>
-        <div className="flex-1 min-w-40">
-          <label className="block text-xs font-medium text-gray-500 mb-1">
-            Karyawan
-          </label>
+      <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+        {viewMode === 'harian' ? (
+          <div className="flex items-center justify-between gap-3">
+            <button
+              onClick={goToPrevDay}
+              className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
+            >
+              <ChevronLeft size={20} className="text-gray-600" />
+            </button>
+            <div className="flex items-center gap-2 flex-1 justify-center">
+              <input
+                type="date"
+                value={filter.tanggal}
+                max={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setFilter((p) => ({ ...p, tanggal: e.target.value }))}
+                className="border border-gray-300 rounded-xl px-3 py-2 text-sm text-center"
+              />
+              {!isToday && (
+                <button
+                  onClick={goToToday}
+                  className="text-xs font-medium text-orange-500 hover:text-orange-600 bg-orange-50 hover:bg-orange-100 px-3 py-2 rounded-xl transition-colors whitespace-nowrap"
+                >
+                  Hari Ini
+                </button>
+              )}
+            </div>
+            <button
+              onClick={goToNextDay}
+              disabled={isToday}
+              className={`p-2 rounded-xl transition-colors ${
+                isToday ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'
+              }`}
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
+        ) : (
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Bulan</label>
+            <input
+              type="month"
+              value={filter.bulan}
+              onChange={(e) => setFilter((p) => ({ ...p, bulan: e.target.value }))}
+              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+            />
+          </div>
+        )}
+
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Karyawan</label>
           <select
             value={filter.user_id}
-            onChange={(e) =>
-              setFilter((p) => ({ ...p, user_id: e.target.value }))
-            }
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 
-              text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            onChange={(e) => setFilter((p) => ({ ...p, user_id: e.target.value }))}
+            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
           >
             <option value="">Semua</option>
             {karyawan.map((k) => (
-              <option key={k.id} value={k.id}>
-                {k.nama}
-              </option>
+              <option key={k.id} value={k.id}>{k.nama}</option>
             ))}
           </select>
         </div>
@@ -337,7 +440,9 @@ export default function PenjualanAdmin() {
 
       {/* Summary */}
       <div className="bg-gradient-to-r from-green-500 to-emerald-500 rounded-2xl p-5 text-white">
-        <p className="text-green-100 text-sm">Total Omzet</p>
+        <p className="text-green-100 text-sm">
+          Total Omzet {viewMode === 'harian' ? 'Hari Ini' : getBulanLabel()}
+        </p>
         <p className="text-3xl font-bold mt-1">{formatRupiah(totalOmzet)}</p>
         <div className="mt-4 pt-4 border-t border-white/20 grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
           <div>
@@ -359,124 +464,92 @@ export default function PenjualanAdmin() {
         </div>
       </div>
 
-      {/* Tabel */}
-      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-        <div className="p-4 border-b border-gray-100">
-          <p className="font-bold text-gray-800">Detail Penjualan</p>
-          <p className="text-xs text-gray-400">{data.length} transaksi</p>
-        </div>
-
-        {data.length === 0 ? (
-          <EmptyState
-            icon={ShoppingCart}
-            title="Tidak ada data"
-            description="Belum ada penjualan"
-          />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  {[
-                    'Tgl',
-                    'Jam',
-                    'Karyawan',
-                    'Menu',
-                    'Qty',
-                    'Total',
-                    'Profit',
-                    'Bayar',
-                    'Aksi',
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      className="text-left text-xs font-semibold 
-                        text-gray-500 px-3 py-3 whitespace-nowrap"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {data.map((s) => {
-                  const profit = (s.harga_jual - s.harga_hpp) * s.qty
-                  return (
-                    <tr
-                      key={s.id}
-                      className="hover:bg-gray-50 transition-colors"
-                    >
-                      <td className="px-3 py-3">{s.tanggal}</td>
-                      <td className="px-3 py-3">{formatJam(s.jam)}</td>
-                      <td className="px-3 py-3">{s.users?.nama}</td>
-                      <td className="px-3 py-3">
-                        <div>
-                          <p className="font-medium">{s.nama_menu}</p>
-                          <p className="text-xs text-gray-400">
-                            {s.tipe}
-                            {s.cup_terpakai > 0 &&
-                              ` · ${s.cup_terpakai} cup`}
-                          </p>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3">{s.qty}</td>
-                      <td className="px-3 py-3 font-semibold">
-                        {formatRupiah(s.qty * s.harga_jual)}
-                      </td>
-                      <td className="px-3 py-3 text-blue-600 font-medium">
-                        {formatRupiah(profit)}
-                      </td>
-                      <td className="px-3 py-3">
-                        <Badge
-                          label={s.metode_bayar}
-                          color={METODE_COLORS[s.metode_bayar] || 'gray'}
-                        />
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => openEdit(s)}
-                            className="p-1.5 hover:bg-blue-100 rounded-lg transition-colors"
-                            title="Edit"
-                          >
-                            <Pencil size={14} className="text-blue-500" />
-                          </button>
-                          <button
-                            onClick={() => openHapus(s)}
-                            className="p-1.5 hover:bg-red-100 rounded-lg transition-colors"
-                            title="Hapus"
-                          >
-                            <Trash2 size={14} className="text-red-500" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+      {/* ── HARIAN: tabel transaksi ── */}
+      {viewMode === 'harian' && (
+        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+          <div className="p-4 border-b border-gray-100">
+            <p className="font-bold text-gray-800">Detail Penjualan</p>
+            <p className="text-xs text-gray-400">{data.length} transaksi</p>
           </div>
-        )}
-      </div>
+          {data.length === 0 ? (
+            <EmptyState
+              icon={ShoppingCart}
+              title="Tidak ada data"
+              description={`Belum ada penjualan pada ${getTanggalLabel()}`}
+            />
+          ) : (
+            <TabelPenjualan data={data} onEdit={openEdit} onHapus={openHapus} />
+          )}
+        </div>
+      )}
+
+      {/* ── BULANAN: rekap per hari ── */}
+      {viewMode === 'bulanan' && (
+        <>
+          {rekapBulanan.length === 0 ? (
+            <EmptyState
+              icon={ShoppingCart}
+              title="Tidak ada data"
+              description={`Belum ada penjualan pada ${getBulanLabel()}`}
+            />
+          ) : (
+            <div className="space-y-4">
+              {rekapBulanan.map((hari) => (
+                <div
+                  key={hari.tanggal}
+                  className="bg-white rounded-2xl border border-gray-100 overflow-hidden"
+                >
+                  {/* Header hari */}
+                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-100">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-gray-700">
+                          {format(
+                            new Date(hari.tanggal + 'T00:00:00'),
+                            'EEEE, dd MMMM yyyy',
+                            { locale: id }
+                          )}
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          {hari.items.length} transaksi · {hari.totalItem} item · {hari.totalCup} cup
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-bold text-green-600">
+                          {formatRupiah(hari.omzet)}
+                        </p>
+                        <p className="text-xs text-blue-500">
+                          Profit: {formatRupiah(hari.profit)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Tabel transaksi dalam hari tsb */}
+                  <TabelPenjualan
+                    data={hari.items}
+                    onEdit={openEdit}
+                    onHapus={openHapus}
+                    hideTanggal
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       {/* ══════════════ MODAL EDIT ══════════════ */}
-      <Modal
-        open={modalEdit}
-        onClose={() => setModalEdit(false)}
-        title="Edit Penjualan"
-      >
+      <Modal open={modalEdit} onClose={() => setModalEdit(false)} title="Edit Penjualan">
         {selected && (
           <form onSubmit={handleEdit} className="space-y-4">
             {error && <Alert type="error">{error}</Alert>}
 
             <div className="bg-gray-50 rounded-xl p-3">
               <p className="text-xs text-gray-500">Menu</p>
-              <p className="font-semibold text-gray-800">
-                {selected.nama_menu}
-              </p>
+              <p className="font-semibold text-gray-800">{selected.nama_menu}</p>
               <p className="text-xs text-gray-400 mt-1">
-                {selected.tanggal} · {formatJam(selected.jam)} ·{' '}
-                {selected.users?.nama}
+                {selected.tanggal} · {formatJam(selected.jam)} · {selected.users?.nama}
               </p>
             </div>
 
@@ -484,9 +557,7 @@ export default function PenjualanAdmin() {
               label="Jumlah (Qty)"
               type="number"
               value={editForm.qty}
-              onChange={(e) =>
-                setEditForm((p) => ({ ...p, qty: e.target.value }))
-              }
+              onChange={(e) => setEditForm((p) => ({ ...p, qty: e.target.value }))}
               required
               min="1"
             />
@@ -496,9 +567,7 @@ export default function PenjualanAdmin() {
                 label="Harga Jual"
                 type="number"
                 value={editForm.harga_jual}
-                onChange={(e) =>
-                  setEditForm((p) => ({ ...p, harga_jual: e.target.value }))
-                }
+                onChange={(e) => setEditForm((p) => ({ ...p, harga_jual: e.target.value }))}
                 prefix="Rp"
                 required
               />
@@ -506,33 +575,25 @@ export default function PenjualanAdmin() {
                 label="HPP"
                 type="number"
                 value={editForm.harga_hpp}
-                onChange={(e) =>
-                  setEditForm((p) => ({ ...p, harga_hpp: e.target.value }))
-                }
+                onChange={(e) => setEditForm((p) => ({ ...p, harga_hpp: e.target.value }))}
                 prefix="Rp"
                 required
               />
             </div>
 
             <div className="space-y-1">
-              <label className="block text-sm font-medium text-gray-700">
-                Metode Bayar
-              </label>
+              <label className="block text-sm font-medium text-gray-700">Metode Bayar</label>
               <div className="grid grid-cols-3 gap-2">
                 {['cash', 'transfer', 'qris'].map((m) => (
                   <button
                     key={m}
                     type="button"
-                    onClick={() =>
-                      setEditForm((p) => ({ ...p, metode_bayar: m }))
-                    }
-                    className={`py-2 rounded-xl text-xs font-semibold uppercase 
-                      border-2 transition-colors
-                      ${
-                        editForm.metode_bayar === m
-                          ? 'border-orange-500 bg-orange-50 text-orange-600'
-                          : 'border-gray-200 text-gray-600'
-                      }`}
+                    onClick={() => setEditForm((p) => ({ ...p, metode_bayar: m }))}
+                    className={`py-2 rounded-xl text-xs font-semibold uppercase border-2 transition-colors ${
+                      editForm.metode_bayar === m
+                        ? 'border-orange-500 bg-orange-50 text-orange-600'
+                        : 'border-gray-200 text-gray-600'
+                    }`}
                   >
                     {m}
                   </button>
@@ -543,18 +604,12 @@ export default function PenjualanAdmin() {
             <Input
               label="Catatan"
               value={editForm.catatan}
-              onChange={(e) =>
-                setEditForm((p) => ({ ...p, catatan: e.target.value }))
-              }
+              onChange={(e) => setEditForm((p) => ({ ...p, catatan: e.target.value }))}
               placeholder="Opsional"
             />
 
             <div className="flex gap-3 pt-2">
-              <Button
-                variant="secondary"
-                onClick={() => setModalEdit(false)}
-                className="flex-1"
-              >
+              <Button variant="secondary" onClick={() => setModalEdit(false)} className="flex-1">
                 Batal
               </Button>
               <Button type="submit" loading={submitting} className="flex-1">
@@ -566,11 +621,7 @@ export default function PenjualanAdmin() {
       </Modal>
 
       {/* ══════════════ MODAL HAPUS ══════════════ */}
-      <Modal
-        open={modalHapus}
-        onClose={() => setModalHapus(false)}
-        title="Hapus Penjualan?"
-      >
+      <Modal open={modalHapus} onClose={() => setModalHapus(false)} title="Hapus Penjualan?">
         {selected && (
           <div className="space-y-4">
             {error && <Alert type="error">{error}</Alert>}
@@ -585,9 +636,7 @@ export default function PenjualanAdmin() {
             </div>
 
             <div className="bg-gray-50 rounded-xl p-4 space-y-1">
-              <p className="font-semibold text-gray-800">
-                {selected.nama_menu}
-              </p>
+              <p className="font-semibold text-gray-800">{selected.nama_menu}</p>
               <p className="text-sm text-gray-500">
                 {selected.qty} pcs × {formatRupiah(selected.harga_jual)} ={' '}
                 <span className="font-bold">
@@ -595,31 +644,105 @@ export default function PenjualanAdmin() {
                 </span>
               </p>
               <p className="text-xs text-gray-400 mt-2">
-                {selected.tanggal} · {formatJam(selected.jam)} ·{' '}
-                {selected.users?.nama}
+                {selected.tanggal} · {formatJam(selected.jam)} · {selected.users?.nama}
               </p>
             </div>
 
             <div className="flex gap-3 pt-2">
-              <Button
-                variant="secondary"
-                onClick={() => setModalHapus(false)}
-                className="flex-1"
-              >
+              <Button variant="secondary" onClick={() => setModalHapus(false)} className="flex-1">
                 Batal
               </Button>
-              <Button
-                variant="danger"
-                onClick={handleHapus}
-                loading={submitting}
-                className="flex-1"
-              >
+              <Button variant="danger" onClick={handleHapus} loading={submitting} className="flex-1">
                 Ya, Hapus
               </Button>
             </div>
           </div>
         )}
       </Modal>
+    </div>
+  )
+}
+
+// ── Komponen tabel penjualan ───────────────────────────────────────────────
+function TabelPenjualan({ data, onEdit, onHapus, hideTanggal = false }) {
+  const headers = [
+    ...(!hideTanggal ? ['Tgl'] : []),
+    'Jam',
+    'Karyawan',
+    'Menu',
+    'Qty',
+    'Total',
+    'Profit',
+    'Bayar',
+    'Aksi',
+  ]
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50">
+          <tr>
+            {headers.map((h) => (
+              <th
+                key={h}
+                className="text-left text-xs font-semibold text-gray-500 px-3 py-3 whitespace-nowrap"
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-50">
+          {data.map((s) => {
+            const profit = (s.harga_jual - s.harga_hpp) * s.qty
+            return (
+              <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                {!hideTanggal && <td className="px-3 py-3">{s.tanggal}</td>}
+                <td className="px-3 py-3">{formatJam(s.jam)}</td>
+                <td className="px-3 py-3">{s.users?.nama}</td>
+                <td className="px-3 py-3">
+                  <div>
+                    <p className="font-medium">{s.nama_menu}</p>
+                    <p className="text-xs text-gray-400">
+                      {s.tipe}
+                      {s.cup_terpakai > 0 && ` · ${s.cup_terpakai} cup`}
+                    </p>
+                  </div>
+                </td>
+                <td className="px-3 py-3">{s.qty}</td>
+                <td className="px-3 py-3 font-semibold">
+                  {formatRupiah(s.qty * s.harga_jual)}
+                </td>
+                <td className="px-3 py-3 text-blue-600 font-medium">
+                  {formatRupiah(profit)}
+                </td>
+                <td className="px-3 py-3">
+                  <Badge
+                    label={s.metode_bayar}
+                    color={METODE_COLORS[s.metode_bayar] || 'gray'}
+                  />
+                </td>
+                <td className="px-3 py-3">
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => onEdit(s)}
+                      className="p-1.5 hover:bg-blue-100 rounded-lg transition-colors"
+                    >
+                      <Pencil size={14} className="text-blue-500" />
+                    </button>
+                    <button
+                      onClick={() => onHapus(s)}
+                      className="p-1.5 hover:bg-red-100 rounded-lg transition-colors"
+                    >
+                      <Trash2 size={14} className="text-red-500" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
