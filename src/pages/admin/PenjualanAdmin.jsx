@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Calendar,
   BarChart2,
+  ArrowUpDown,
 } from 'lucide-react'
 import { format, addDays, subDays } from 'date-fns'
 import { id } from 'date-fns/locale'
@@ -26,16 +27,25 @@ import { saveAs } from 'file-saver'
 const METODE_COLORS = { cash: 'green', transfer: 'blue', qris: 'purple' }
 
 export default function PenjualanAdmin() {
-  const [viewMode, setViewMode] = useState('harian') // 'harian' | 'bulanan'
+  const [viewMode, setViewMode] = useState('harian') // 'harian' | 'bulanan' (Rentang Tanggal)
   const [data, setData] = useState([])
   const [rekapBulanan, setRekapBulanan] = useState([])
   const [loading, setLoading] = useState(true)
   const [karyawan, setKaryawan] = useState([])
+  
+  // Ambil tanggal pertama bulan ini untuk default 'startDate'
+  const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10)
+  const todayStr = new Date().toISOString().slice(0, 10)
+
   const [filter, setFilter] = useState({
-    tanggal: new Date().toISOString().slice(0, 10),
-    bulan: new Date().toISOString().slice(0, 7),
+    tanggal: todayStr,
+    startDate: firstDayOfMonth, // Tanggal A
+    endDate: todayStr,        // Tanggal B
     user_id: '',
   })
+  
+  // State baru untuk sorting: 'desc' (terbaru ke terlama) atau 'asc' (terlama ke terbaru)
+  const [sortOrder, setSortOrder] = useState('desc') 
 
   const [modalEdit, setModalEdit] = useState(false)
   const [modalHapus, setModalHapus] = useState(false)
@@ -56,7 +66,7 @@ export default function PenjualanAdmin() {
   useEffect(() => {
     if (viewMode === 'harian') fetchDataHarian()
     else fetchDataBulanan()
-  }, [filter, viewMode])
+  }, [filter, viewMode, sortOrder]) // Re-run ketika filter, viewMode, atau sortOrder berubah
 
   const fetchKaryawan = async () => {
     const { data } = await supabase
@@ -82,22 +92,21 @@ export default function PenjualanAdmin() {
     setLoading(false)
   }
 
+  // Fetch data berdasarkan Rentang Tanggal (Tanggal A ke Tanggal B)
   const fetchDataBulanan = async () => {
     setLoading(true)
-    const [tahun, bulan] = filter.bulan.split('-')
-    const startDate = `${tahun}-${bulan}-01`
-    const lastDay = new Date(tahun, bulan, 0).getDate()
-    const endDate = `${tahun}-${bulan}-${String(lastDay).padStart(2, '0')}`
+    const { startDate, endDate, user_id } = filter
 
     let query = supabase
       .from('sales')
       .select('*, users(nama)')
       .gte('tanggal', startDate)
       .lte('tanggal', endDate)
-      .order('tanggal', { ascending: false })
+      // Sort database sesuai order yang dipilih
+      .order('tanggal', { ascending: sortOrder === 'asc' })
       .order('jam', { ascending: false })
 
-    if (filter.user_id) query = query.eq('user_id', filter.user_id)
+    if (user_id) query = query.eq('user_id', user_id)
 
     const { data: sales } = await query
 
@@ -109,7 +118,10 @@ export default function PenjualanAdmin() {
     })
 
     const rekap = Object.entries(grouped)
-      .sort(([a], [b]) => b.localeCompare(a))
+      .sort(([a], [b]) => {
+        // Sorting kelompok tanggal di frontend agar sejalan dengan sortOrder
+        return sortOrder === 'asc' ? a.localeCompare(b) : b.localeCompare(a)
+      })
       .map(([tanggal, items]) => ({
         tanggal,
         items,
@@ -132,15 +144,14 @@ export default function PenjualanAdmin() {
 
   const goToNextDay = () => {
     const next = addDays(new Date(filter.tanggal), 1)
-    const today = new Date().toISOString().slice(0, 10)
-    if (format(next, 'yyyy-MM-dd') <= today)
+    if (format(next, 'yyyy-MM-dd') <= todayStr)
       setFilter((p) => ({ ...p, tanggal: format(next, 'yyyy-MM-dd') }))
   }
 
   const goToToday = () =>
-    setFilter((p) => ({ ...p, tanggal: new Date().toISOString().slice(0, 10) }))
+    setFilter((p) => ({ ...p, tanggal: todayStr }))
 
-  const isToday = filter.tanggal === new Date().toISOString().slice(0, 10)
+  const isToday = filter.tanggal === todayStr
 
   // ── EDIT ──────────────────────────────────────────────────────────────────
   const openEdit = (item) => {
@@ -297,8 +308,9 @@ export default function PenjualanAdmin() {
     format(new Date(filter.tanggal + 'T00:00:00'), 'EEEE, dd MMMM yyyy', { locale: id })
 
   const getBulanLabel = () => {
-    const [y, m] = filter.bulan.split('-')
-    return format(new Date(y, m - 1, 1), 'MMMM yyyy', { locale: id })
+    const start = format(new Date(filter.startDate + 'T00:00:00'), 'dd MMM yyyy', { locale: id })
+    const end = format(new Date(filter.endDate + 'T00:00:00'), 'dd MMM yyyy', { locale: id })
+    return `${start} - ${end}`
   }
 
   const exportExcel = () => {
@@ -324,7 +336,7 @@ export default function PenjualanAdmin() {
     const filename =
       viewMode === 'harian'
         ? `Penjualan_${filter.tanggal}.xlsx`
-        : `Penjualan_${filter.bulan}.xlsx`
+        : `Penjualan_${filter.startDate}_to_${filter.endDate}.xlsx`
     saveAs(new Blob([buf], { type: 'application/octet-stream' }), filename)
   }
 
@@ -370,12 +382,12 @@ export default function PenjualanAdmin() {
           }`}
         >
           <BarChart2 size={15} />
-          Bulanan
+          Rentang Tanggal
         </button>
       </div>
 
       {/* Filter */}
-      <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+      <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-4">
         {viewMode === 'harian' ? (
           <div className="flex items-center justify-between gap-3">
             <button
@@ -388,7 +400,7 @@ export default function PenjualanAdmin() {
               <input
                 type="date"
                 value={filter.tanggal}
-                max={new Date().toISOString().slice(0, 10)}
+                max={todayStr}
                 onChange={(e) => setFilter((p) => ({ ...p, tanggal: e.target.value }))}
                 className="border border-gray-300 rounded-xl px-3 py-2 text-sm text-center"
               />
@@ -412,36 +424,68 @@ export default function PenjualanAdmin() {
             </button>
           </div>
         ) : (
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Bulan</label>
-            <input
-              type="month"
-              value={filter.bulan}
-              onChange={(e) => setFilter((p) => ({ ...p, bulan: e.target.value }))}
-              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
-            />
+          /* Grid Date Range Picker (Dari Tanggal A ke Tanggal B) */
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Dari Tanggal (A)</label>
+              <input
+                type="date"
+                value={filter.startDate}
+                max={filter.endDate}
+                onChange={(e) => setFilter((p) => ({ ...p, startDate: e.target.value }))}
+                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Sampai Tanggal (B)</label>
+              <input
+                type="date"
+                value={filter.endDate}
+                min={filter.startDate}
+                max={todayStr}
+                onChange={(e) => setFilter((p) => ({ ...p, endDate: e.target.value }))}
+                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+              />
+            </div>
           </div>
         )}
 
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Karyawan</label>
-          <select
-            value={filter.user_id}
-            onChange={(e) => setFilter((p) => ({ ...p, user_id: e.target.value }))}
-            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
-          >
-            <option value="">Semua</option>
-            {karyawan.map((k) => (
-              <option key={k.id} value={k.id}>{k.nama}</option>
-            ))}
-          </select>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Karyawan</label>
+            <select
+              value={filter.user_id}
+              onChange={(e) => setFilter((p) => ({ ...p, user_id: e.target.value }))}
+              className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+            >
+              <option value="">Semua</option>
+              {karyawan.map((k) => (
+                <option key={k.id} value={k.id}>{k.nama}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Filter tambahan untuk sorting (Hanya muncul di view mode rentang tanggal) */}
+          {viewMode === 'bulanan' && (
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Urutan Tanggal</label>
+              <select
+                value={sortOrder}
+                onChange={(e) => setSortOrder(e.target.value)}
+                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+              >
+                <option value="desc">Terbaru ke Terlama</option>
+                <option value="asc">Terlama ke Terbaru</option>
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Summary */}
       <div className="bg-gradient-to-r from-green-500 to-emerald-500 rounded-2xl p-5 text-white">
         <p className="text-green-100 text-sm">
-          Total Omzet {viewMode === 'harian' ? 'Hari Ini' : getBulanLabel()}
+          Total Omzet {viewMode === 'harian' ? 'Hari Ini' : 'Periode Terpilih'}
         </p>
         <p className="text-3xl font-bold mt-1">{formatRupiah(totalOmzet)}</p>
         <div className="mt-4 pt-4 border-t border-white/20 grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
@@ -483,14 +527,14 @@ export default function PenjualanAdmin() {
         </div>
       )}
 
-      {/* ── BULANAN: rekap per hari ── */}
+      {/* ── RENTANG TANGGAL: rekap per hari ── */}
       {viewMode === 'bulanan' && (
         <>
           {rekapBulanan.length === 0 ? (
             <EmptyState
               icon={ShoppingCart}
               title="Tidak ada data"
-              description={`Belum ada penjualan pada ${getBulanLabel()}`}
+              description={`Belum ada penjualan pada rentang ${getBulanLabel()}`}
             />
           ) : (
             <div className="space-y-4">
