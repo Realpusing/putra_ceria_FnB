@@ -8,7 +8,21 @@ import Modal from '../../components/ui/Modal'
 import Alert from '../../components/ui/Alert'
 import Input from '../../components/ui/Input'
 import { formatRupiah, formatJam } from '../../utils/helpers'
-import { Download, Receipt, Pencil, Trash2, ChevronLeft, ChevronRight, Calendar, BarChart2 } from 'lucide-react'
+import {
+  Download,
+  Receipt,
+  Pencil,
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
+  Calendar,
+  BarChart2,
+  CalendarRange,
+  Package,
+  ChevronDown,
+  ChevronUp,
+  Search,
+} from 'lucide-react'
 import { format, addDays, subDays } from 'date-fns'
 import { id } from 'date-fns/locale'
 import * as XLSX from 'xlsx'
@@ -36,20 +50,30 @@ const KATEGORI = [
 ]
 
 export default function PengeluaranAdmin() {
-  const [viewMode, setViewMode] = useState('harian') // 'harian' | 'bulanan'
+  const [viewMode, setViewMode] = useState('harian') // 'harian' | 'bulanan' | 'rentang'
   const [data, setData] = useState([])
-  const [rekapBulanan, setRekapBulanan] = useState([]) // data rekap per hari dalam bulan
+  const [rekapBulanan, setRekapBulanan] = useState([])
   const [loading, setLoading] = useState(true)
   const [karyawan, setKaryawan] = useState([])
   const [filter, setFilter] = useState({
     tanggal: new Date().toISOString().slice(0, 10),
     bulan: new Date().toISOString().slice(0, 7),
+    tanggal_dari: new Date().toISOString().slice(0, 10),
+    tanggal_sampai: new Date().toISOString().slice(0, 10),
     user_id: '',
     kategori: '',
   })
 
+  // Rekap barang
+  const [showRekapBarang, setShowRekapBarang] = useState(false)
+  const [searchBarang, setSearchBarang] = useState('')
+  const [sortBarang, setSortBarang] = useState('total_desc') // 'nama_asc' | 'nama_desc' | 'qty_desc' | 'total_desc'
+  const [filterKatBarang, setFilterKatBarang] = useState('')
+
   const [modalEdit, setModalEdit] = useState(false)
   const [modalHapus, setModalHapus] = useState(false)
+  const [modalDetailBarang, setModalDetailBarang] = useState(false)
+  const [selectedBarang, setSelectedBarang] = useState(null)
   const [selected, setSelected] = useState(null)
   const [editForm, setEditForm] = useState({
     kategori: '',
@@ -71,8 +95,10 @@ export default function PengeluaranAdmin() {
   useEffect(() => {
     if (viewMode === 'harian') {
       fetchDataHarian()
-    } else {
+    } else if (viewMode === 'bulanan') {
       fetchDataBulanan()
+    } else {
+      fetchDataRentang()
     }
   }, [filter, viewMode])
 
@@ -87,7 +113,6 @@ export default function PengeluaranAdmin() {
 
   const fetchDataHarian = async () => {
     setLoading(true)
-
     let query = supabase
       .from('expenses')
       .select('*, users(nama)')
@@ -121,15 +146,37 @@ export default function PengeluaranAdmin() {
     if (filter.kategori) query = query.eq('kategori', filter.kategori)
 
     const { data: expenses } = await query
+    groupByDate(expenses ?? [])
+    setData(expenses ?? [])
+    setLoading(false)
+  }
 
-    // Kelompokkan per tanggal
+  const fetchDataRentang = async () => {
+    setLoading(true)
+    let query = supabase
+      .from('expenses')
+      .select('*, users(nama)')
+      .gte('tanggal', filter.tanggal_dari)
+      .lte('tanggal', filter.tanggal_sampai)
+      .order('tanggal', { ascending: false })
+      .order('jam', { ascending: false })
+
+    if (filter.user_id) query = query.eq('user_id', filter.user_id)
+    if (filter.kategori) query = query.eq('kategori', filter.kategori)
+
+    const { data: expenses } = await query
+    groupByDate(expenses ?? [])
+    setData(expenses ?? [])
+    setLoading(false)
+  }
+
+  const groupByDate = (expenses) => {
     const grouped = {}
-    ;(expenses ?? []).forEach((e) => {
+    expenses.forEach((e) => {
       if (!grouped[e.tanggal]) grouped[e.tanggal] = []
       grouped[e.tanggal].push(e)
     })
 
-    // Buat array rekap per hari (urut tanggal desc)
     const rekap = Object.entries(grouped)
       .sort(([a], [b]) => b.localeCompare(a))
       .map(([tanggal, items]) => ({
@@ -142,9 +189,67 @@ export default function PengeluaranAdmin() {
         }, {}),
       }))
 
-    setData(expenses ?? [])
     setRekapBulanan(rekap)
-    setLoading(false)
+  }
+
+  // ── Rekap Barang ──
+  const getRekapBarang = () => {
+    const map = {}
+    data.forEach((e) => {
+      const key = `${e.nama_barang.toLowerCase().trim()}__${e.kategori}`
+      if (!map[key]) {
+        map[key] = {
+          nama_barang: e.nama_barang,
+          kategori: e.kategori,
+          total_qty: 0,
+          total_harga: 0,
+          min_harga: Infinity,
+          max_harga: 0,
+          jumlah_transaksi: 0,
+          jumlah_cup: 0,
+          transaksi: [],
+        }
+      }
+      map[key].total_qty += e.qty
+      map[key].total_harga += e.qty * e.harga_satuan
+      map[key].jumlah_transaksi += 1
+      if (e.harga_satuan < map[key].min_harga) map[key].min_harga = e.harga_satuan
+      if (e.harga_satuan > map[key].max_harga) map[key].max_harga = e.harga_satuan
+      if (e.is_cup) map[key].jumlah_cup += e.jumlah_cup || 0
+      map[key].transaksi.push(e)
+    })
+
+    let items = Object.values(map)
+
+    // Filter kategori
+    if (filterKatBarang) {
+      items = items.filter((i) => i.kategori === filterKatBarang)
+    }
+
+    // Search
+    if (searchBarang.trim()) {
+      const q = searchBarang.toLowerCase().trim()
+      items = items.filter((i) => i.nama_barang.toLowerCase().includes(q))
+    }
+
+    // Sort
+    switch (sortBarang) {
+      case 'nama_asc':
+        items.sort((a, b) => a.nama_barang.localeCompare(b.nama_barang))
+        break
+      case 'nama_desc':
+        items.sort((a, b) => b.nama_barang.localeCompare(a.nama_barang))
+        break
+      case 'qty_desc':
+        items.sort((a, b) => b.total_qty - a.total_qty)
+        break
+      case 'total_desc':
+      default:
+        items.sort((a, b) => b.total_harga - a.total_harga)
+        break
+    }
+
+    return items
   }
 
   const goToPrevDay = () => {
@@ -165,6 +270,13 @@ export default function PengeluaranAdmin() {
   }
 
   const isToday = filter.tanggal === new Date().toISOString().slice(0, 10)
+
+  // Preset rentang waktu
+  const setPresetRange = (days) => {
+    const end = new Date().toISOString().slice(0, 10)
+    const start = format(subDays(new Date(), days - 1), 'yyyy-MM-dd')
+    setFilter((p) => ({ ...p, tanggal_dari: start, tanggal_sampai: end }))
+  }
 
   const openEdit = (item) => {
     setSelected(item)
@@ -223,7 +335,7 @@ export default function PengeluaranAdmin() {
 
       setSuccess('Pengeluaran berhasil diupdate')
       setModalEdit(false)
-      viewMode === 'harian' ? await fetchDataHarian() : await fetchDataBulanan()
+      refreshData()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -267,12 +379,23 @@ export default function PengeluaranAdmin() {
 
       setSuccess('Pengeluaran berhasil dihapus')
       setModalHapus(false)
-      viewMode === 'harian' ? await fetchDataHarian() : await fetchDataBulanan()
+      refreshData()
     } catch (err) {
       setError(err.message)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const refreshData = () => {
+    if (viewMode === 'harian') fetchDataHarian()
+    else if (viewMode === 'bulanan') fetchDataBulanan()
+    else fetchDataRentang()
+  }
+
+  const openDetailBarang = (barang) => {
+    setSelectedBarang(barang)
+    setModalDetailBarang(true)
   }
 
   const totalPengeluaran = data.reduce((sum, e) => sum + e.qty * e.harga_satuan, 0)
@@ -293,6 +416,18 @@ export default function PengeluaranAdmin() {
     return format(new Date(y, m - 1, 1), 'MMMM yyyy', { locale: id })
   }
 
+  const getRentangLabel = () => {
+    const dari = format(new Date(filter.tanggal_dari + 'T00:00:00'), 'dd MMM yyyy', { locale: id })
+    const sampai = format(new Date(filter.tanggal_sampai + 'T00:00:00'), 'dd MMM yyyy', { locale: id })
+    return `${dari} — ${sampai}`
+  }
+
+  const getPeriodeLabel = () => {
+    if (viewMode === 'harian') return getTanggalLabel()
+    if (viewMode === 'bulanan') return getBulanLabel()
+    return getRentangLabel()
+  }
+
   const exportExcel = () => {
     const rows = data.map((e) => ({
       Tanggal: e.tanggal,
@@ -307,15 +442,36 @@ export default function PengeluaranAdmin() {
       Catatan: e.catatan || '',
     }))
 
+    // Sheet rekap barang
+    const rekapBarangData = getRekapBarang().map((b) => ({
+      'Nama Barang': b.nama_barang,
+      Kategori: KATEGORI_LABELS[b.kategori],
+      'Total Qty': b.total_qty,
+      'Total Harga': b.total_harga,
+      'Harga Min': b.min_harga === Infinity ? 0 : b.min_harga,
+      'Harga Max': b.max_harga,
+      'Rata-rata Harga': b.total_qty > 0 ? Math.round(b.total_harga / b.total_qty) : 0,
+      'Jumlah Transaksi': b.jumlah_transaksi,
+      'Total Cup': b.jumlah_cup || '-',
+    }))
+
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Pengeluaran')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rekapBarangData), 'Rekap Barang')
+
     const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-    const filename =
-      viewMode === 'harian'
-        ? `Pengeluaran_${filter.tanggal}.xlsx`
-        : `Pengeluaran_${filter.bulan}.xlsx`
+    let filename = 'Pengeluaran'
+    if (viewMode === 'harian') filename += `_${filter.tanggal}`
+    else if (viewMode === 'bulanan') filename += `_${filter.bulan}`
+    else filename += `_${filter.tanggal_dari}_sd_${filter.tanggal_sampai}`
+    filename += '.xlsx'
+
     saveAs(new Blob([buf], { type: 'application/octet-stream' }), filename)
   }
+
+  const rekapBarangList = getRekapBarang()
+  const totalJenisBarang = rekapBarangList.length
+  const totalQtyBarang = rekapBarangList.reduce((s, b) => s + b.total_qty, 0)
 
   if (loading) return <Loading />
 
@@ -325,9 +481,7 @@ export default function PengeluaranAdmin() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-800">Laporan Pengeluaran</h1>
-          <p className="text-sm text-gray-500">
-            {viewMode === 'harian' ? getTanggalLabel() : getBulanLabel()}
-          </p>
+          <p className="text-sm text-gray-500">{getPeriodeLabel()}</p>
         </div>
         <Button onClick={exportExcel} variant="outline">
           <Download size={16} /> Export Excel
@@ -335,38 +489,48 @@ export default function PengeluaranAdmin() {
       </div>
 
       {success && <Alert type="success">{success}</Alert>}
-      {error && <Alert type="error">{error}</Alert>}
+      {error && !modalEdit && !modalHapus && <Alert type="error">{error}</Alert>}
 
       {/* Toggle View Mode */}
       <div className="bg-white rounded-2xl p-1.5 border border-gray-100 flex gap-1">
         <button
           onClick={() => setViewMode('harian')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all ${
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
             viewMode === 'harian'
               ? 'bg-orange-500 text-white shadow-sm'
               : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          <Calendar size={15} />
+          <Calendar size={14} />
           Harian
         </button>
         <button
           onClick={() => setViewMode('bulanan')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all ${
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
             viewMode === 'bulanan'
               ? 'bg-orange-500 text-white shadow-sm'
               : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          <BarChart2 size={15} />
+          <BarChart2 size={14} />
           Bulanan
+        </button>
+        <button
+          onClick={() => setViewMode('rentang')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            viewMode === 'rentang'
+              ? 'bg-orange-500 text-white shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <CalendarRange size={14} />
+          Rentang
         </button>
       </div>
 
       {/* Filter */}
       <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
-        {viewMode === 'harian' ? (
-          /* Navigasi Tanggal */
+        {viewMode === 'harian' && (
           <div className="flex items-center justify-between gap-3">
             <button
               onClick={goToPrevDay}
@@ -401,8 +565,9 @@ export default function PengeluaranAdmin() {
               <ChevronRight size={20} />
             </button>
           </div>
-        ) : (
-          /* Pilih Bulan */
+        )}
+
+        {viewMode === 'bulanan' && (
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">Bulan</label>
             <input
@@ -411,6 +576,52 @@ export default function PengeluaranAdmin() {
               onChange={(e) => setFilter((p) => ({ ...p, bulan: e.target.value }))}
               className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
             />
+          </div>
+        )}
+
+        {viewMode === 'rentang' && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-3">
+              <div className="flex-1 min-w-36">
+                <label className="block text-xs font-medium text-gray-500 mb-1">Dari Tanggal</label>
+                <input
+                  type="date"
+                  value={filter.tanggal_dari}
+                  max={filter.tanggal_sampai}
+                  onChange={(e) => setFilter((p) => ({ ...p, tanggal_dari: e.target.value }))}
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="flex-1 min-w-36">
+                <label className="block text-xs font-medium text-gray-500 mb-1">Sampai Tanggal</label>
+                <input
+                  type="date"
+                  value={filter.tanggal_sampai}
+                  min={filter.tanggal_dari}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => setFilter((p) => ({ ...p, tanggal_sampai: e.target.value }))}
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            {/* Preset buttons */}
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: '7 Hari', days: 7 },
+                { label: '14 Hari', days: 14 },
+                { label: '30 Hari', days: 30 },
+                { label: '60 Hari', days: 60 },
+                { label: '90 Hari', days: 90 },
+              ].map((preset) => (
+                <button
+                  key={preset.days}
+                  onClick={() => setPresetRange(preset.days)}
+                  className="text-xs font-medium text-orange-500 hover:text-orange-600 bg-orange-50 hover:bg-orange-100 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -425,7 +636,9 @@ export default function PengeluaranAdmin() {
             >
               <option value="">Semua</option>
               {karyawan.map((k) => (
-                <option key={k.id} value={k.id}>{k.nama}</option>
+                <option key={k.id} value={k.id}>
+                  {k.nama}
+                </option>
               ))}
             </select>
           </div>
@@ -438,7 +651,9 @@ export default function PengeluaranAdmin() {
             >
               <option value="">Semua</option>
               {KATEGORI.map((k) => (
-                <option key={k.value} value={k.value}>{k.label}</option>
+                <option key={k.value} value={k.value}>
+                  {k.label}
+                </option>
               ))}
             </select>
           </div>
@@ -447,12 +662,8 @@ export default function PengeluaranAdmin() {
 
       {/* Summary */}
       <div className="bg-white rounded-2xl p-5 border border-gray-100">
-        <p className="text-sm text-gray-500">
-          Total Pengeluaran {viewMode === 'harian' ? 'Hari Ini' : getBulanLabel()}
-        </p>
-        <p className="text-2xl font-bold text-red-500 mt-1">
-          {formatRupiah(totalPengeluaran)}
-        </p>
+        <p className="text-sm text-gray-500">Total Pengeluaran</p>
+        <p className="text-2xl font-bold text-red-500 mt-1">{formatRupiah(totalPengeluaran)}</p>
         {Object.keys(rekapKategori).length > 0 && (
           <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 md:grid-cols-4 gap-3">
             {Object.entries(rekapKategori).map(([kat, total]) => (
@@ -464,6 +675,135 @@ export default function PengeluaranAdmin() {
           </div>
         )}
         <p className="text-xs text-gray-400 mt-3">{data.length} transaksi</p>
+      </div>
+
+      {/* ── REKAP BARANG ── */}
+      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+        <button
+          onClick={() => setShowRekapBarang(!showRekapBarang)}
+          className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+              <Package size={20} className="text-blue-600" />
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-semibold text-gray-800">Rekap Barang</p>
+              <p className="text-xs text-gray-400">
+                {totalJenisBarang} jenis barang · {totalQtyBarang} total item
+              </p>
+            </div>
+          </div>
+          {showRekapBarang ? (
+            <ChevronUp size={20} className="text-gray-400" />
+          ) : (
+            <ChevronDown size={20} className="text-gray-400" />
+          )}
+        </button>
+
+        {showRekapBarang && (
+          <div className="border-t border-gray-100">
+            {/* Search & Sort */}
+            <div className="px-4 py-3 space-y-3 bg-gray-50 border-b border-gray-100">
+              <div className="relative">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Cari nama barang..."
+                  value={searchBarang}
+                  onChange={(e) => setSearchBarang(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-xl text-sm"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={sortBarang}
+                  onChange={(e) => setSortBarang(e.target.value)}
+                  className="border border-gray-300 rounded-xl px-3 py-1.5 text-xs flex-1 min-w-28"
+                >
+                  <option value="total_desc">Total Terbesar</option>
+                  <option value="qty_desc">Qty Terbanyak</option>
+                  <option value="nama_asc">Nama A-Z</option>
+                  <option value="nama_desc">Nama Z-A</option>
+                </select>
+                <select
+                  value={filterKatBarang}
+                  onChange={(e) => setFilterKatBarang(e.target.value)}
+                  className="border border-gray-300 rounded-xl px-3 py-1.5 text-xs flex-1 min-w-28"
+                >
+                  <option value="">Semua Kategori</option>
+                  {KATEGORI.map((k) => (
+                    <option key={k.value} value={k.value}>
+                      {k.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* List barang */}
+            {rekapBarangList.length === 0 ? (
+              <div className="py-8 text-center">
+                <p className="text-sm text-gray-400">Tidak ada barang ditemukan</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-50">
+                {rekapBarangList.map((b, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => openDetailBarang(b)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors text-left"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold text-gray-800 truncate">
+                          {b.nama_barang}
+                        </p>
+                        <Badge
+                          label={KATEGORI_LABELS[b.kategori]}
+                          color={KATEGORI_COLORS[b.kategori]}
+                        />
+                      </div>
+                      <div className="flex items-center gap-3 mt-1">
+                        <p className="text-xs text-gray-400">
+                          {b.total_qty} item · {b.jumlah_transaksi}× beli
+                        </p>
+                        {b.jumlah_cup > 0 && (
+                          <span className="text-xs text-orange-500 font-medium">
+                            +{b.jumlah_cup} cup
+                          </span>
+                        )}
+                      </div>
+                      {b.min_harga !== b.max_harga && b.min_harga !== Infinity && (
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          Harga: {formatRupiah(b.min_harga)} — {formatRupiah(b.max_harga)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right ml-3">
+                      <p className="text-sm font-bold text-gray-800">{formatRupiah(b.total_harga)}</p>
+                      <p className="text-xs text-gray-400">
+                        ~{formatRupiah(b.total_qty > 0 ? Math.round(b.total_harga / b.total_qty) : 0)}/pcs
+                      </p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Total rekap */}
+            {rekapBarangList.length > 0 && (
+              <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                <p className="text-xs font-medium text-gray-500">
+                  {rekapBarangList.length} jenis barang
+                </p>
+                <p className="text-sm font-bold text-red-500">
+                  {formatRupiah(rekapBarangList.reduce((s, b) => s + b.total_harga, 0))}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── HARIAN: List transaksi ── */}
@@ -478,37 +818,35 @@ export default function PengeluaranAdmin() {
           ) : (
             <div className="space-y-3">
               {data.map((e) => (
-                <ItemCard
-                  key={e.id}
-                  e={e}
-                  showTanggal={false}
-                  onEdit={openEdit}
-                  onHapus={openHapus}
-                />
+                <ItemCard key={e.id} e={e} onEdit={openEdit} onHapus={openHapus} />
               ))}
             </div>
           )}
         </>
       )}
 
-      {/* ── BULANAN: Rekap per hari ── */}
-      {viewMode === 'bulanan' && (
+      {/* ── BULANAN / RENTANG: Rekap per hari ── */}
+      {(viewMode === 'bulanan' || viewMode === 'rentang') && (
         <>
           {rekapBulanan.length === 0 ? (
             <EmptyState
               icon={Receipt}
               title="Tidak ada data"
-              description={`Belum ada pengeluaran pada ${getBulanLabel()}`}
+              description={`Belum ada pengeluaran pada ${getPeriodeLabel()}`}
             />
           ) : (
             <div className="space-y-4">
               {rekapBulanan.map((hari) => (
-                <div key={hari.tanggal} className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-                  {/* Header hari */}
+                <div
+                  key={hari.tanggal}
+                  className="bg-white rounded-2xl border border-gray-100 overflow-hidden"
+                >
                   <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-100">
                     <div>
                       <p className="text-sm font-semibold text-gray-700">
-                        {format(new Date(hari.tanggal + 'T00:00:00'), 'EEEE, dd MMMM', { locale: id })}
+                        {format(new Date(hari.tanggal + 'T00:00:00'), 'EEEE, dd MMMM', {
+                          locale: id,
+                        })}
                       </p>
                       <p className="text-xs text-gray-400">{hari.items.length} transaksi</p>
                     </div>
@@ -525,18 +863,9 @@ export default function PengeluaranAdmin() {
                       </div>
                     </div>
                   </div>
-
-                  {/* List item dalam hari tersebut */}
                   <div className="divide-y divide-gray-50">
                     {hari.items.map((e) => (
-                      <ItemCard
-                        key={e.id}
-                        e={e}
-                        showTanggal={false}
-                        onEdit={openEdit}
-                        onHapus={openHapus}
-                        compact
-                      />
+                      <ItemCard key={e.id} e={e} onEdit={openEdit} onHapus={openHapus} compact />
                     ))}
                   </div>
                 </div>
@@ -558,7 +887,13 @@ export default function PengeluaranAdmin() {
                   <button
                     key={k.value}
                     type="button"
-                    onClick={() => setEditForm((p) => ({ ...p, kategori: k.value, is_cup: k.value === 'cup' }))}
+                    onClick={() =>
+                      setEditForm((p) => ({
+                        ...p,
+                        kategori: k.value,
+                        is_cup: k.value === 'cup',
+                      }))
+                    }
                     className={`p-3 rounded-xl text-left border-2 transition-colors ${
                       editForm.kategori === k.value
                         ? 'border-orange-500 bg-orange-50'
@@ -627,8 +962,12 @@ export default function PengeluaranAdmin() {
             />
 
             <div className="flex gap-3 pt-2">
-              <Button variant="secondary" onClick={() => setModalEdit(false)} className="flex-1">Batal</Button>
-              <Button type="submit" loading={submitting} className="flex-1">Update</Button>
+              <Button variant="secondary" onClick={() => setModalEdit(false)} className="flex-1">
+                Batal
+              </Button>
+              <Button type="submit" loading={submitting} className="flex-1">
+                Update
+              </Button>
             </div>
           </form>
         )}
@@ -641,13 +980,17 @@ export default function PengeluaranAdmin() {
             {error && <Alert type="error">{error}</Alert>}
             <div className="bg-red-50 border border-red-200 rounded-xl p-4">
               <p className="text-sm text-red-700 font-semibold">Yakin ingin menghapus?</p>
-              <p className="text-xs text-red-600 mt-1">Data yang dihapus tidak bisa dikembalikan</p>
+              <p className="text-xs text-red-600 mt-1">
+                Data yang dihapus tidak bisa dikembalikan
+              </p>
             </div>
             <div className="bg-gray-50 rounded-xl p-4">
               <p className="font-semibold text-gray-800">{selected.nama_barang}</p>
               <p className="text-sm text-gray-500 mt-1">
                 {selected.qty} × {formatRupiah(selected.harga_satuan)} ={' '}
-                <span className="font-bold">{formatRupiah(selected.qty * selected.harga_satuan)}</span>
+                <span className="font-bold">
+                  {formatRupiah(selected.qty * selected.harga_satuan)}
+                </span>
               </p>
               {selected.is_cup && (
                 <p className="text-xs text-orange-600 mt-2">
@@ -656,9 +999,135 @@ export default function PengeluaranAdmin() {
               )}
             </div>
             <div className="flex gap-3 pt-2">
-              <Button variant="secondary" onClick={() => setModalHapus(false)} className="flex-1">Batal</Button>
-              <Button variant="danger" onClick={handleHapus} loading={submitting} className="flex-1">Ya, Hapus</Button>
+              <Button
+                variant="secondary"
+                onClick={() => setModalHapus(false)}
+                className="flex-1"
+              >
+                Batal
+              </Button>
+              <Button variant="danger" onClick={handleHapus} loading={submitting} className="flex-1">
+                Ya, Hapus
+              </Button>
             </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* MODAL DETAIL BARANG */}
+      <Modal
+        open={modalDetailBarang}
+        onClose={() => setModalDetailBarang(false)}
+        title="Detail Pembelian Barang"
+        size="lg"
+      >
+        {selectedBarang && (
+          <div className="space-y-4">
+            {/* Info barang */}
+            <div className="bg-blue-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-lg font-bold text-gray-800">{selectedBarang.nama_barang}</p>
+                <Badge
+                  label={KATEGORI_LABELS[selectedBarang.kategori]}
+                  color={KATEGORI_COLORS[selectedBarang.kategori]}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4 mt-3">
+                <div>
+                  <p className="text-xs text-gray-500">Total Qty</p>
+                  <p className="text-lg font-bold text-gray-800">{selectedBarang.total_qty}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Total Harga</p>
+                  <p className="text-lg font-bold text-red-500">
+                    {formatRupiah(selectedBarang.total_harga)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Rata-rata Harga</p>
+                  <p className="text-sm font-semibold text-gray-700">
+                    {formatRupiah(
+                      selectedBarang.total_qty > 0
+                        ? Math.round(selectedBarang.total_harga / selectedBarang.total_qty)
+                        : 0
+                    )}
+                    /pcs
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Jumlah Transaksi</p>
+                  <p className="text-sm font-semibold text-gray-700">
+                    {selectedBarang.jumlah_transaksi}× beli
+                  </p>
+                </div>
+                {selectedBarang.min_harga !== Infinity && (
+                  <div>
+                    <p className="text-xs text-gray-500">Harga Terendah</p>
+                    <p className="text-sm font-semibold text-green-600">
+                      {formatRupiah(selectedBarang.min_harga)}
+                    </p>
+                  </div>
+                )}
+                {selectedBarang.max_harga > 0 && (
+                  <div>
+                    <p className="text-xs text-gray-500">Harga Tertinggi</p>
+                    <p className="text-sm font-semibold text-red-500">
+                      {formatRupiah(selectedBarang.max_harga)}
+                    </p>
+                  </div>
+                )}
+                {selectedBarang.jumlah_cup > 0 && (
+                  <div className="col-span-2">
+                    <p className="text-xs text-gray-500">Total Cup</p>
+                    <p className="text-sm font-semibold text-orange-600">
+                      {selectedBarang.jumlah_cup} pcs
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Riwayat transaksi barang tersebut */}
+            <div>
+              <p className="text-sm font-semibold text-gray-700 mb-2">Riwayat Pembelian</p>
+              <div className="max-h-64 overflow-y-auto rounded-xl border border-gray-200 divide-y divide-gray-100">
+                {selectedBarang.transaksi
+                  .sort((a, b) => {
+                    const tgl = b.tanggal.localeCompare(a.tanggal)
+                    if (tgl !== 0) return tgl
+                    return (b.jam || '').localeCompare(a.jam || '')
+                  })
+                  .map((t, idx) => (
+                    <div key={idx} className="px-4 py-3 flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-gray-700">
+                          {format(new Date(t.tanggal + 'T00:00:00'), 'dd MMM yyyy', { locale: id })}
+                          <span className="text-gray-400 ml-2">{formatJam(t.jam)}</span>
+                        </p>
+                        <p className="text-xs text-gray-400 mt-0.5">{t.users?.nama}</p>
+                        {t.catatan && (
+                          <p className="text-xs text-gray-400 italic mt-0.5">{t.catatan}</p>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-gray-500">
+                          {t.qty} × {formatRupiah(t.harga_satuan)}
+                        </p>
+                        <p className="text-sm font-bold text-gray-800">
+                          {formatRupiah(t.qty * t.harga_satuan)}
+                        </p>
+                        {t.is_cup && t.jumlah_cup > 0 && (
+                          <p className="text-xs text-orange-500">+{t.jumlah_cup} cup</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+
+            <Button variant="secondary" onClick={() => setModalDetailBarang(false)} className="w-full">
+              Tutup
+            </Button>
           </div>
         )}
       </Modal>
@@ -683,9 +1152,7 @@ function ItemCard({ e, onEdit, onHapus, compact = false }) {
           <p className="text-xs text-gray-400 mt-0.5">
             {e.qty} × {formatRupiah(e.harga_satuan)}
           </p>
-          {e.catatan && (
-            <p className="text-xs text-gray-400 mt-0.5 italic">{e.catatan}</p>
-          )}
+          {e.catatan && <p className="text-xs text-gray-400 mt-0.5 italic">{e.catatan}</p>}
         </div>
         <div className="text-right ml-3">
           <p className="font-bold text-gray-800">{formatRupiah(e.qty * e.harga_satuan)}</p>
